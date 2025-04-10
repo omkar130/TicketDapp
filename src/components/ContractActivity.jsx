@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useContext } from 'react';
-import { Container, Table, Badge, Alert, Button, Spinner } from 'react-bootstrap';
+import { Container, Table, Badge, Alert, Button, Spinner, Pagination } from 'react-bootstrap';
 import Web3 from 'web3';
 import contractABI from '../ethereum/abi.json'; // Import your contract ABI
 
@@ -11,6 +11,9 @@ const ContractActivity = ({ contractAddress }) => {
     const [page, setPage] = useState(1);
     const [hasMore, setHasMore] = useState(true);
     const [eventSignatures, setEventSignatures] = useState({});
+    const [totalPages, setTotalPages] = useState(1);
+    const [currentPage, setCurrentPage] = useState(1);
+    const ITEMS_PER_PAGE = 10; // Number of items per page
 
     const ETHERSCAN_API_KEY = "4BFYXUAB7K7QYCGHIEPEKUX1H433SEACKG";
     const EVENTS_PER_PAGE = 20;
@@ -101,18 +104,39 @@ const ContractActivity = ({ contractAddress }) => {
 
     const fetchActivities = async (pageNumber) => {
         try {
+            setLoading(true);
+
+            // First, get total number of events
+            const countResponse = await fetch(
+                `https://api-sepolia.etherscan.io/api?module=logs&action=getLogs` +
+                `&fromBlock=0` +
+                `&toBlock=latest` +
+                `&address=${contractAddress}` +
+                `&apikey=${ETHERSCAN_API_KEY}`
+            );
+
+            const countData = await countResponse.json();
+
+            if (countData.status === '1') {
+                const totalEvents = countData.result.length;
+                const calculatedTotalPages = Math.ceil(totalEvents / ITEMS_PER_PAGE);
+                setTotalPages(calculatedTotalPages);
+            }
+
+            // Then fetch the specific page
             const response = await fetch(
                 `https://api-sepolia.etherscan.io/api?module=logs&action=getLogs` +
                 `&fromBlock=0` +
                 `&toBlock=latest` +
                 `&address=${contractAddress}` +
                 `&page=${pageNumber}` +
-                `&offset=${EVENTS_PER_PAGE}` +
+                `&offset=${ITEMS_PER_PAGE}` +
                 `&apikey=${ETHERSCAN_API_KEY}`
             );
 
             const data = await response.json();
-            console.log(data);
+            console.log("Page data:", data); // Debug log
+
             if (data.status === '1') {
                 const newActivities = data.result.map(log => {
                     const eventName = getEventName(log.topics);
@@ -127,28 +151,101 @@ const ContractActivity = ({ contractAddress }) => {
                     };
                 });
 
-                setActivities(prev =>
-                    pageNumber === 1 ? newActivities : [...prev, ...newActivities]
-                );
-                setHasMore(newActivities.length === EVENTS_PER_PAGE);
+                setActivities(newActivities);
+                setCurrentPage(pageNumber);
             } else {
                 throw new Error(data.message);
             }
         } catch (error) {
+            console.error('Error fetching activities:', error);
             setError('Failed to fetch contract activities: ' + error.message);
         } finally {
             setLoading(false);
         }
     };
 
+    // Handle page change
+    const handlePageChange = (pageNumber) => {
+        setCurrentPage(pageNumber);
+        fetchActivities(pageNumber);
+        window.scrollTo(0, 0); // Scroll to top when page changes
+    };
+
+    // Generate pagination items
+    const renderPaginationItems = () => {
+        let items = [];
+        const maxVisiblePages = 5;
+
+        if (totalPages <= maxVisiblePages) {
+            // Show all pages if total pages are less than max visible
+            for (let number = 1; number <= totalPages; number++) {
+                items.push(
+                    <Pagination.Item
+                        key={number}
+                        active={number === currentPage}
+                        onClick={() => handlePageChange(number)}
+                    >
+                        {number}
+                    </Pagination.Item>
+                );
+            }
+        } else {
+            // Always show first page
+            items.push(
+                <Pagination.Item
+                    key={1}
+                    active={1 === currentPage}
+                    onClick={() => handlePageChange(1)}
+                >
+                    1
+                </Pagination.Item>
+            );
+
+            // Calculate middle range
+            let startPage = Math.max(2, currentPage - 1);
+            let endPage = Math.min(totalPages - 1, currentPage + 1);
+
+            // Add ellipsis after first page if needed
+            if (startPage > 2) {
+                items.push(<Pagination.Ellipsis key="ellipsis1" />);
+            }
+
+            // Add middle pages
+            for (let number = startPage; number <= endPage; number++) {
+                items.push(
+                    <Pagination.Item
+                        key={number}
+                        active={number === currentPage}
+                        onClick={() => handlePageChange(number)}
+                    >
+                        {number}
+                    </Pagination.Item>
+                );
+            }
+
+            // Add ellipsis before last page if needed
+            if (endPage < totalPages - 1) {
+                items.push(<Pagination.Ellipsis key="ellipsis2" />);
+            }
+
+            // Always show last page
+            items.push(
+                <Pagination.Item
+                    key={totalPages}
+                    active={totalPages === currentPage}
+                    onClick={() => handlePageChange(totalPages)}
+                >
+                    {totalPages}
+                </Pagination.Item>
+            );
+        }
+
+        return items;
+    };
+
     useEffect(() => {
         fetchActivities(1);
     }, [contractAddress]);
-
-    const loadMore = () => {
-        setPage(prev => prev + 1);
-        fetchActivities(page + 1);
-    };
 
     const getEventBadgeVariant = (eventName) => {
         const variants = {
@@ -185,58 +282,83 @@ const ContractActivity = ({ contractAddress }) => {
                 </Alert>
             )}
 
-            <Table responsive striped hover>
-                <thead>
-                    <tr>
-                        <th>Event</th>
-                        <th>Details</th>
-                        <th>Transaction</th>
-                        <th>Time</th>
-                    </tr>
-                </thead>
-                <tbody>
-                    {activities.map((activity, index) => (
-                        <tr key={`${activity.transactionHash}-${index}`}>
-                            <td>
-                                <Badge bg="dark">
-                                    {activity.eventName}
-                                </Badge>
-                            </td>
-                            <td>
-                                {Object.entries(activity.data).map(([key, value]) => (
-                                    <div key={key}>
-                                        <strong>{key}:</strong>{' '}
-                                        {typeof value === 'string' && value.startsWith('0x')
-                                            ? formatAddress(value)
-                                            : value.toString()}
-                                    </div>
-                                ))}
-                            </td>
-                            <td>
-                                <a
-                                    href={`https://sepolia.etherscan.io/tx/${activity.transactionHash}`}
-                                    target="_blank"
-                                    rel="noopener noreferrer"
-                                >
-                                    {formatAddress(activity.transactionHash)}
-                                </a>
-                            </td>
-                            <td>{activity.timestamp.toLocaleString()}</td>
-                        </tr>
-                    ))}
-                </tbody>
-            </Table>
-
-            {hasMore && (
-                <div className="text-center mt-3 mb-4">
-                    <Button
-                        variant="outline-primary"
-                        onClick={loadMore}
-                        disabled={loading}
-                    >
-                        {loading ? 'Loading...' : 'Load More'}
-                    </Button>
+            {loading ? (
+                <div className="text-center mt-4">
+                    <Spinner animation="border" role="status">
+                        <span className="visually-hidden">Loading...</span>
+                    </Spinner>
                 </div>
+            ) : (
+                <>
+                    <Table responsive striped hover>
+                        <thead>
+                            <tr>
+                                <th>Event</th>
+                                <th>Details</th>
+                                <th>Transaction</th>
+                                <th>Time</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            {activities.map((activity, index) => (
+                                <tr key={`${activity.transactionHash}-${index}`}>
+                                    <td>
+                                        <Badge bg="dark">
+                                            {activity.eventName}
+                                        </Badge>
+                                    </td>
+                                    <td>
+                                        {Object.entries(activity.data).map(([key, value]) => (
+                                            <div key={key}>
+                                                <strong>{key}:</strong>{' '}
+                                                {typeof value === 'string' && value.startsWith('0x')
+                                                    ? formatAddress(value)
+                                                    : value.toString()}
+                                            </div>
+                                        ))}
+                                    </td>
+                                    <td>
+                                        <a
+                                            href={`https://sepolia.etherscan.io/tx/${activity.transactionHash}`}
+                                            target="_blank"
+                                            rel="noopener noreferrer"
+                                        >
+                                            {formatAddress(activity.transactionHash)}
+                                        </a>
+                                    </td>
+                                    <td>{activity.timestamp.toLocaleString()}</td>
+                                </tr>
+                            ))}
+                        </tbody>
+                    </Table>
+
+                    <div className="d-flex flex-column align-items-center mt-4">
+                        <Pagination>
+                            <Pagination.First
+                                onClick={() => handlePageChange(1)}
+                                disabled={currentPage === 1}
+                            />
+                            <Pagination.Prev
+                                onClick={() => handlePageChange(currentPage - 1)}
+                                disabled={currentPage === 1}
+                            />
+
+                            {renderPaginationItems()}
+
+                            <Pagination.Next
+                                onClick={() => handlePageChange(currentPage + 1)}
+                                disabled={currentPage === totalPages}
+                            />
+                            <Pagination.Last
+                                onClick={() => handlePageChange(totalPages)}
+                                disabled={currentPage === totalPages}
+                            />
+                        </Pagination>
+                        <div className="mt-2 text-muted">
+                            Page {currentPage} of {totalPages}
+                        </div>
+                    </div>
+                </>
             )}
         </Container>
     );
